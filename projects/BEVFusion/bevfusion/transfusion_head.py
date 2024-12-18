@@ -224,7 +224,8 @@ class TransFusionHead(nn.Module):
         #################################
         # query initialization
         #################################
-        with torch.autocast('cuda', enabled=False):
+        # with torch.autocast(device_type='cuda', dtype=torch.float32):  # https://discuss.pytorch.org/t/older-version-of-pytorch-with-torch-autocast-cuda-attributeerror-module-torch-has-no-attribute-autocast/142993
+        with torch.cuda.amp.autocast():
             dense_heatmap = self.heatmap_head(fusion_feat.float())
         heatmap = dense_heatmap.detach().sigmoid()
         padding = self.nms_kernel_size // 2

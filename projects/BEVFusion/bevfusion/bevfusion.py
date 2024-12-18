@@ -150,7 +150,8 @@ class BEVFusion(Base3DDetector):
         BN, C, H, W = x.size()
         x = x.view(B, int(BN / B), C, H, W)
 
-        with torch.autocast(device_type='cuda', dtype=torch.float32):
+        # with torch.autocast(device_type='cuda', dtype=torch.float32):  # https://discuss.pytorch.org/t/older-version-of-pytorch-with-torch-autocast-cuda-attributeerror-module-torch-has-no-attribute-autocast/142993
+        with torch.cuda.amp.autocast():
             x = self.view_transform(
                 x,
                 points,
@@ -165,7 +166,8 @@ class BEVFusion(Base3DDetector):
 
     def extract_pts_feat(self, batch_inputs_dict) -> torch.Tensor:
         points = batch_inputs_dict['points']
-        with torch.autocast('cuda', enabled=False):
+        # with torch.autocast('cuda', enabled=False):  # https://discuss.pytorch.org/t/older-version-of-pytorch-with-torch-autocast-cuda-attributeerror-module-torch-has-no-attribute-autocast/142993
+        with torch.cuda.amp.autocast(enabled=False):
             points = [point.float() for point in points]
             feats, coords, sizes = self.voxelize(points)
             batch_size = coords[-1, 0] + 1
