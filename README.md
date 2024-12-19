@@ -23,3 +23,4 @@ To spin up a container, run this: `./docker/run.sh`
         print(f'ignore classes: {ignore_class_name}')
     UnboundLocalError: local variable 'ignore_class_name' referenced before assignment
     ```
+- [ ] Test the model to compare the accuracy
