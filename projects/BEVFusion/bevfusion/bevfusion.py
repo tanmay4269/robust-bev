@@ -41,51 +41,56 @@ class BEVFusion(Base3DDetector):
         super().__init__(
             data_preprocessor=data_preprocessor, init_cfg=init_cfg)
 
-        self.voxelize_reduce = voxelize_cfg.pop('voxelize_reduce')
-        self.pts_voxel_layer = Voxelization(**voxelize_cfg)
+        # TODO: Add this to config
+        self.view_recon_pretraining = True
 
-        self.pts_voxel_encoder = MODELS.build(pts_voxel_encoder)
+        if not self.view_recon_pretraining:
+            self.voxelize_reduce = voxelize_cfg.pop('voxelize_reduce')
+            self.pts_voxel_layer = Voxelization(**voxelize_cfg)
+
+            self.pts_voxel_encoder = MODELS.build(pts_voxel_encoder)
 
         self.img_backbone = MODELS.build(
             img_backbone) if img_backbone is not None else None
         self.img_neck = MODELS.build(
             img_neck) if img_neck is not None else None
         
+        # TODO: Make these configurable
+        self.num_views = 6
+        self.recon_embed_dim = 256
+        self.view_embed = nn.Embedding(
+            self.num_views, self.recon_embed_dim)
+        self.learned_query = nn.Parameter(
+            torch.randn(1, self.recon_embed_dim))
+        
         # TODO: Add this to config
         self.view_recon_net = DetrTransformerDecoder(
             num_layers=3,
             layer_cfg=dict(),  # use default config
         )
-        # Learned query for reconstruction
-        self.learned_query = nn.Parameter(torch.randn(1, 256))
 
-        self.num_views = 6
-        self.view_embed_dim = 256
-        self.view_embed = nn.Embedding(
-            self.num_views, self.view_embed_dim)
+        if not self.view_recon_pretraining:
+            self.view_transform = MODELS.build(
+                view_transform) if view_transform is not None else None
+            self.pts_middle_encoder = MODELS.build(pts_middle_encoder)
 
-        self.view_transform = MODELS.build(
-            view_transform) if view_transform is not None else None
-        self.pts_middle_encoder = MODELS.build(pts_middle_encoder)
+            self.fusion_layer = MODELS.build(
+                fusion_layer) if fusion_layer is not None else None
 
-        self.fusion_layer = MODELS.build(
-            fusion_layer) if fusion_layer is not None else None
+            self.pts_backbone = MODELS.build(pts_backbone)
+            self.pts_neck = MODELS.build(pts_neck)
 
-        self.pts_backbone = MODELS.build(pts_backbone)
-        self.pts_neck = MODELS.build(pts_neck)
-
-        self.bbox_head = MODELS.build(bbox_head)
+            self.bbox_head = MODELS.build(bbox_head)
 
         self.init_weights()
 
-        # Freeze all parameters
-        for param in self.parameters():
-            param.requires_grad = False
-
-        # Unfreeze view reconstruction network
-        for param in self.view_recon_net.parameters():
-            param.requires_grad = True
-        self.learned_query.requires_grad = True
+        # TODO: Make this configurable
+        if self.view_recon_pretraining:
+            for param in self.parameters():
+                param.requires_grad = False
+            for param in self.view_recon_net.parameters():
+                param.requires_grad = True
+            self.learned_query.requires_grad = True
 
     def _forward(self,
                  batch_inputs: Tensor,
@@ -178,6 +183,9 @@ class BEVFusion(Base3DDetector):
 
         x, recon_loss = self.view_reconstruction(x, compute_loss)
 
+        if self.view_recon_pretraining:
+            return None, recon_loss
+
         # with torch.autocast(device_type='cuda', dtype=torch.float32):
         with torch.cuda.amp.autocast(enabled=False):
             x = self.view_transform(
@@ -192,8 +200,9 @@ class BEVFusion(Base3DDetector):
             )
         return x, recon_loss
     
+    # TODO: Add this to utils.py
     def _build_2d_sin_emb(self, H, W, C, device):
-        """Create a simple 2D sinusoidal encoding for pixel coords (u/H, v/W)."""
+        """A simple 2D sinusoidal encoding for pixel coords (u/H, v/W)."""
         u = torch.arange(H, device=device, dtype=torch.float).unsqueeze(1).repeat(1, W)
         v = torch.arange(W, device=device, dtype=torch.float).unsqueeze(0).repeat(H, 1)
         
@@ -216,25 +225,28 @@ class BEVFusion(Base3DDetector):
             torch.Tensor: Reconstructed multi-view image features.
                 Shape (B, N, C, H, W)
             torch.Tensor: Reconstruction loss if computed.
-        Notes:
-            Only reconstructs one view right now. Will support multiple views soon.
+        TODOs:
+            - [ ] generalize to multi view reconstruction
+            - [ ] identify missing view automatically
         """
         B, N, C, H, W = x.shape
         dropped_idx = torch.randint(0, N, (1,), device=x.device).item()
         dropped_view = x[:, dropped_idx, ...].clone()
-
-        # Exclude the dropped view when building key and value
-        remain_views = torch.cat([x[:, :dropped_idx, ...], x[:, dropped_idx+1:, ...]], dim=1)  # shape (B, N-1, C, H, W)
-
-        key = remain_views.reshape(B, (N -1) * H * W, C)
-        value = key.clone()
+        remaining_views = torch.cat([x[:, :dropped_idx, ...], x[:, dropped_idx+1:, ...]], dim=1)  # shape (B, N-1, C, H, W)
 
         query = self.learned_query.expand(H * W, -1).unsqueeze(0).expand(B, -1, -1)
+        key = remaining_views.reshape(B, (N -1) * H * W, C)
+        value = key.clone()
 
-        # Build 2D sinusoidal embedding for pixels
+        # Position embeddings
         sin_emb = self._build_2d_sin_emb(H, W, C, x.device).view(H * W, C)
 
-        # Build view embedding for each remaining view
+        # Dropped view
+        dropped_v_emb = self.view_embed(torch.tensor(dropped_idx, device=x.device))
+        query_pos_enc = sin_emb + dropped_v_emb
+        query_pos_enc = query_pos_enc.unsqueeze(0).expand(B, -1, -1)
+
+        # Remaining views
         view_ids = torch.arange(N - 1, device=x.device).unsqueeze(-1).expand(-1, H * W)
         key_pos_enc = []
         for i in range(N - 1):
@@ -242,11 +254,6 @@ class BEVFusion(Base3DDetector):
             key_pos_enc.append(sin_emb + v_emb)
         key_pos_enc = torch.stack(key_pos_enc, dim=0).view((N - 1) * H * W, C)
         key_pos_enc = key_pos_enc.unsqueeze(0).expand(B, -1, -1)  # shape (B, (N-1)*H*W, C)
-
-        # Build for dropped view
-        dropped_v_emb = self.view_embed(torch.tensor(dropped_idx, device=x.device))
-        query_pos_enc = sin_emb + dropped_v_emb
-        query_pos_enc = query_pos_enc.unsqueeze(0).expand(B, -1, -1)
 
         reconstructed = self.view_recon_net(
             query=query,
@@ -257,8 +264,11 @@ class BEVFusion(Base3DDetector):
             key_padding_mask=None
         )
         reconstructed_view = reconstructed[-1].reshape(B, 1, C, H, W)
-        x[:, dropped_idx : dropped_idx+1, ...] = reconstructed_view
 
+        # TODO: Enable this after pre-training the view reconstruction network
+        # x[:, dropped_idx : dropped_idx+1, ...] = reconstructed_view
+
+        # ? Can this be done based on model's train or eval mode?
         recon_loss = F.mse_loss(reconstructed_view, dropped_view.unsqueeze(1)) if compute_loss else None
 
         return x, recon_loss
@@ -328,6 +338,9 @@ class BEVFusion(Base3DDetector):
             - bbox_3d (:obj:`BaseInstance3DBoxes`): Prediction of bboxes,
                 contains a tensor with shape (num_instances, 7).
         """
+        if self.view_recon_pretraining:
+            return []  # Jugad :P
+
         batch_input_metas = [item.metainfo for item in batch_data_samples]
         feats, _ = self.extract_feat(batch_inputs_dict, batch_input_metas)
 
@@ -376,6 +389,10 @@ class BEVFusion(Base3DDetector):
                 compute_loss=True
             )
             features.append(img_feature)
+        
+        if self.view_recon_pretraining:
+            return None, recon_loss
+        
         pts_feature = self.extract_pts_feat(batch_inputs_dict)
         features.append(pts_feature)
 
@@ -397,11 +414,10 @@ class BEVFusion(Base3DDetector):
         feats, recon_loss = self.extract_feat(batch_inputs_dict, batch_input_metas)
 
         losses = dict()
+        if not self.view_recon_pretraining and self.with_bbox_head:
+            bbox_loss = self.bbox_head.loss(feats, batch_data_samples)
+            losses.update(bbox_loss)
         if recon_loss is not None:
             losses['loss/view_recon'] = recon_loss
-        if self.with_bbox_head:
-            bbox_loss = self.bbox_head.loss(feats, batch_data_samples)
-
-        losses.update(bbox_loss)
 
         return losses
