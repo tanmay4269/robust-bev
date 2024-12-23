@@ -35,14 +35,20 @@ class BEVFusion(Base3DDetector):
         bbox_head: Optional[dict] = None,
         init_cfg: OptMultiConfig = None,
         seg_head: Optional[dict] = None,
+        view_recon_cfg: Optional[dict] = None,
         **kwargs,
     ) -> None:
         voxelize_cfg = data_preprocessor.pop('voxelize_cfg')
         super().__init__(
             data_preprocessor=data_preprocessor, init_cfg=init_cfg)
 
-        # TODO: Add this to config
-        self.view_recon_pretraining = True
+        # TODO: Make this another module
+        self.view_recon_enabled = view_recon_cfg.pop('enabled')
+        self.view_recon_pretraining = view_recon_cfg.pop('pretraining')
+        self.use_reconstructed_view = view_recon_cfg.pop('use_reconstructed_view')
+
+        assert self.view_recon_enabled or not self.view_recon_pretraining, \
+            "Error: view_recon_enabled is False while view_recon_pretraining is True"
 
         if not self.view_recon_pretraining:
             self.voxelize_reduce = voxelize_cfg.pop('voxelize_reduce')
@@ -55,19 +61,33 @@ class BEVFusion(Base3DDetector):
         self.img_neck = MODELS.build(
             img_neck) if img_neck is not None else None
         
-        # TODO: Make these configurable
-        self.num_views = 6
-        self.recon_embed_dim = 256
-        self.view_embed = nn.Embedding(
-            self.num_views, self.recon_embed_dim)
-        self.learned_query = nn.Parameter(
-            torch.randn(1, self.recon_embed_dim))
-        
-        # TODO: Add this to config
-        self.view_recon_net = DetrTransformerDecoder(
-            num_layers=3,
-            layer_cfg=dict(),  # use default config
-        )
+        if self.view_recon_enabled:
+            self.num_views = 6
+            embed_dims = view_recon_cfg.pop('embed_dims')
+            self.view_embed = nn.Embedding(
+                self.num_views, embed_dims)
+            self.learned_query = nn.Parameter(
+                torch.randn(1, embed_dims))
+            
+            # TODO: Add this to config
+            self.view_recon_net = DetrTransformerDecoder(
+                num_layers=view_recon_cfg.pop('num_layers'),
+                layer_cfg=view_recon_cfg.pop('layer_cfg'),
+            )
+
+            checkpoint = view_recon_cfg.pop('checkpoint')
+            # TODO: Figure out a better way of doing this
+            if checkpoint is not None:
+                state_dict = torch.load(checkpoint)['state_dict']
+                def _helper(module_name):
+                    ret = dict()
+                    for k, v in state_dict.items():
+                        if k.startswith(module_name):
+                            ret[k[len(module_name) + 1:]] = v
+                    return ret
+                self.view_embed.load_state_dict(_helper('view_embed'))
+                self.learned_query.data = state_dict['learned_query']
+                self.view_recon_net.load_state_dict(_helper('view_recon_net'))
 
         if not self.view_recon_pretraining:
             self.view_transform = MODELS.build(
@@ -84,8 +104,8 @@ class BEVFusion(Base3DDetector):
 
         self.init_weights()
 
-        # TODO: Make this configurable
         if self.view_recon_pretraining:
+            # Freeze all parameters except the view reconstruction network
             for param in self.parameters():
                 param.requires_grad = False
             for param in self.view_recon_net.parameters():
@@ -181,10 +201,10 @@ class BEVFusion(Base3DDetector):
         BN, C, H, W = x.size()
         x = x.view(B, int(BN / B), C, H, W)
 
-        x, recon_loss = self.view_reconstruction(x, compute_loss)
-
-        if self.view_recon_pretraining:
-            return None, recon_loss
+        if self.view_recon_enabled:
+            x, recon_loss = self.view_reconstruction(x, compute_loss)
+            if self.view_recon_pretraining:
+                return None, recon_loss
 
         # with torch.autocast(device_type='cuda', dtype=torch.float32):
         with torch.cuda.amp.autocast(enabled=False):
@@ -198,7 +218,7 @@ class BEVFusion(Base3DDetector):
                 lidar_aug_matrix,
                 img_metas,
             )
-        return x, recon_loss
+        return (x, recon_loss) if self.view_recon_enabled else (x, None)
     
     # TODO: Add this to utils.py
     def _build_2d_sin_emb(self, H, W, C, device):
@@ -228,6 +248,7 @@ class BEVFusion(Base3DDetector):
         TODOs:
             - [ ] generalize to multi view reconstruction
             - [ ] identify missing view automatically
+            - [ ] make this another module
         """
         B, N, C, H, W = x.shape
         dropped_idx = torch.randint(0, N, (1,), device=x.device).item()
@@ -265,8 +286,10 @@ class BEVFusion(Base3DDetector):
         )
         reconstructed_view = reconstructed[-1].reshape(B, 1, C, H, W)
 
-        # TODO: Enable this after pre-training the view reconstruction network
-        # x[:, dropped_idx : dropped_idx+1, ...] = reconstructed_view
+        if self.use_reconstructed_view:
+            mask = torch.ones_like(x)
+            mask[:, dropped_idx:dropped_idx+1, ...] = 0
+            x = x * mask + reconstructed_view * (1 - mask)
 
         # ? Can this be done based on model's train or eval mode?
         recon_loss = F.mse_loss(reconstructed_view, dropped_view.unsqueeze(1)) if compute_loss else None
@@ -339,7 +362,8 @@ class BEVFusion(Base3DDetector):
                 contains a tensor with shape (num_instances, 7).
         """
         if self.view_recon_pretraining:
-            return []  # Jugad :P
+            return []   # Jugad that doesn't work, but forces the 
+                        # model to train just for one epoch
 
         batch_input_metas = [item.metainfo for item in batch_data_samples]
         feats, _ = self.extract_feat(batch_inputs_dict, batch_input_metas)

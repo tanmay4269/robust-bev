@@ -42,6 +42,17 @@ model = dict(
         norm_cfg=dict(type='BN2d', requires_grad=True),
         act_cfg=dict(type='ReLU', inplace=True),
         upsample_cfg=dict(mode='bilinear', align_corners=False)),
+    view_recon_cfg=dict(
+            type='ViewReconstrcution',  # TODO: Make this another module
+            enabled=True,
+            pretraining=False,
+            use_reconstructed_view=False,  # OOM error if True
+            num_layers=3,
+            embed_dims=256,
+            layer_cfg=dict(),
+            checkpoint=None
+            # checkpoint='/workspace/projects/BEVFusion/checkpoints/view_recon/num_layers=3.pth',
+        ),
     view_transform=dict(
         type='DepthLSSTransform',
         in_channels=256,
