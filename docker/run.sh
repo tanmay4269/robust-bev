@@ -3,19 +3,24 @@
 IMAGE_NAME="mmdetection3d:dev-tvg"
 CONTAINER_NAME="mmdetection3d-dev-tvg"
 
-HOST_DATA_DIR="/media/tvg/my_label/datasets/nuscenes"
-CONTAINER_DATA_DIR="/workspace/data/nuscenes"
+if [[ "$(hostname)" == "umic-System-Product-Name" ]]; then
+    HOST_DATA_DIR="/media/tvg/my_label/datasets/nuscenes"
+    HOST_WORK_DIR="/home/tvg/Projects/robust-bev/mmdetection3d"
+elif [[ "$(hostname)" == "biplab48gb" ]]; then
+    HOST_DATA_DIR="/apps1/tanmay_g/data/nuscenes"
+    HOST_WORK_DIR="/apps1/tanmay_g/Projects/robust-bev/mmdetection3d"
+else
+    echo "Error: This script must be run on the host 'biplab48gb' or 'umic-System-Product-Name'."
+    exit 1
+fi
 
-HOST_WORK_DIR="/home/tvg/Projects/robust-bev/mmdetection3d"
+CONTAINER_DATA_DIR="/workspace/data/nuscenes"
 CONTAINER_WORK_DIR="/workspace"
 
-SHM_SIZE="64g"
-GPU_DEVICES="all"
-
 docker run -it \
-    --gpus "device=${GPU_DEVICES}" \
+    --gpus all \
     --name "${CONTAINER_NAME}" \
-    --shm-size=${SHM_SIZE} \
+    --shm-size=64g \
     --ulimit memlock=-1 \
     --ulimit stack=67108864 \
     -v "${HOST_DATA_DIR}:${CONTAINER_DATA_DIR}:ro" \
