@@ -43,9 +43,15 @@ class BEVFusion(Base3DDetector):
             data_preprocessor=data_preprocessor, init_cfg=init_cfg)
 
         # TODO: Make this another module
+        if view_recon_cfg is None:
+            view_recon_cfg = dict(
+                enabled=False, 
+                pretraining=False, 
+                use_reconstructed_view=False)
         self.view_recon_enabled = view_recon_cfg.pop('enabled')
         self.view_recon_pretraining = view_recon_cfg.pop('pretraining')
         self.use_reconstructed_view = view_recon_cfg.pop('use_reconstructed_view')
+        self.tmp_drop_view_only = view_recon_cfg.pop('tmp_drop_view_only')
 
         assert self.view_recon_enabled or not self.view_recon_pretraining, \
             "Error: view_recon_enabled is False while view_recon_pretraining is True"
@@ -200,6 +206,13 @@ class BEVFusion(Base3DDetector):
 
         BN, C, H, W = x.size()
         x = x.view(B, int(BN / B), C, H, W)
+
+        # Temporary jugad
+        if self.tmp_drop_view_only:
+            dropped_idx = torch.randint(0, x.shape[1], (1,), device=x.device).item()
+            mask = torch.ones_like(x)
+            mask[:, dropped_idx:dropped_idx+1, ...] = 0
+            x = x * mask
 
         if self.view_recon_enabled:
             x, recon_loss = self.view_reconstruction(x, compute_loss)

@@ -44,14 +44,16 @@ model = dict(
         upsample_cfg=dict(mode='bilinear', align_corners=False)),
     view_recon_cfg=dict(
             type='ViewReconstrcution',  # TODO: Make this another module
+            tmp_drop_view_only=False,   # Just a temporary thing. Enabling it doesn't 
+                                        # make use of view recon but just simulates
+                                        # view drop. Ideally done at data loading level
             enabled=True,
             pretraining=False,
-            use_reconstructed_view=False,  # OOM error if True
+            use_reconstructed_view=True,
             num_layers=3,
             embed_dims=256,
             layer_cfg=dict(),
-            checkpoint=None
-            # checkpoint='/workspace/projects/BEVFusion/checkpoints/view_recon/num_layers=3.pth',
+            checkpoint='/workspace/projects/BEVFusion/checkpoints/view_recon/num_layers=3.pth',
         ),
     view_transform=dict(
         type='DepthLSSTransform',
