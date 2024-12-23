@@ -36,6 +36,7 @@ class BEVFusion(Base3DDetector):
         init_cfg: OptMultiConfig = None,
         seg_head: Optional[dict] = None,
         view_recon_cfg: Optional[dict] = None,
+        tmp_cfg: Optional[dict] = None,
         **kwargs,
     ) -> None:
         voxelize_cfg = data_preprocessor.pop('voxelize_cfg')
@@ -51,7 +52,10 @@ class BEVFusion(Base3DDetector):
         self.view_recon_enabled = view_recon_cfg.pop('enabled')
         self.view_recon_pretraining = view_recon_cfg.pop('pretraining')
         self.use_reconstructed_view = view_recon_cfg.pop('use_reconstructed_view')
-        self.tmp_drop_view_only = view_recon_cfg.pop('tmp_drop_view_only')
+        self.num_views_drop = view_recon_cfg.pop('num_views_drop')
+
+        # Temporary config for analysis
+        self.drop_pts_feature = tmp_cfg.pop('drop_pts_feature')
 
         assert self.view_recon_enabled or not self.view_recon_pretraining, \
             "Error: view_recon_enabled is False while view_recon_pretraining is True"
@@ -207,15 +211,15 @@ class BEVFusion(Base3DDetector):
         BN, C, H, W = x.size()
         x = x.view(B, int(BN / B), C, H, W)
 
-        # Temporary jugad
-        if self.tmp_drop_view_only:
-            dropped_idx = torch.randint(0, x.shape[1], (1,), device=x.device).item()
+        if self.num_views_drop > 0:
+            dropped_idxs = torch.randint(0, x.shape[1], (self.num_views_drop,), device=x.device)
             mask = torch.ones_like(x)
-            mask[:, dropped_idx:dropped_idx+1, ...] = 0
+            mask[:, dropped_idxs, ...] = 0
             x = x * mask
 
         if self.view_recon_enabled:
-            x, recon_loss = self.view_reconstruction(x, compute_loss)
+            x, recon_loss = self.view_reconstruction(
+                x, compute_loss, dropped_idxs)
             if self.view_recon_pretraining:
                 return None, recon_loss
 
@@ -248,7 +252,7 @@ class BEVFusion(Base3DDetector):
         linear = nn.Linear(4, C, bias=False).to(device)
         return linear(pos.view(-1, 4)).view(H, W, C)
 
-    def view_reconstruction(self, x, compute_loss=False):
+    def view_reconstruction(self, x, compute_loss=False, dropped_idxs=None):
         """
         Args:
             x (torch.Tensor): Multi-view image features right out 
@@ -264,7 +268,10 @@ class BEVFusion(Base3DDetector):
             - [ ] make this another module
         """
         B, N, C, H, W = x.shape
-        dropped_idx = torch.randint(0, N, (1,), device=x.device).item()
+        # dropped_idx = torch.randint(0, N, (1,), device=x.device).item()
+        assert dropped_idxs.shape[0] == 1, \
+            "Does not support multiple views drop"
+        dropped_idx = dropped_idxs
         dropped_view = x[:, dropped_idx, ...].clone()
         remaining_views = torch.cat([x[:, :dropped_idx, ...], x[:, dropped_idx+1:, ...]], dim=1)  # shape (B, N-1, C, H, W)
 
@@ -431,6 +438,9 @@ class BEVFusion(Base3DDetector):
             return None, recon_loss
         
         pts_feature = self.extract_pts_feat(batch_inputs_dict)
+        if self.drop_pts_feature:
+            mask = torch.zeros_like(pts_feature)
+            pts_feature = pts_feature * mask
         features.append(pts_feature)
 
         if self.fusion_layer is not None:

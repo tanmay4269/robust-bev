@@ -43,18 +43,16 @@ model = dict(
         act_cfg=dict(type='ReLU', inplace=True),
         upsample_cfg=dict(mode='bilinear', align_corners=False)),
     view_recon_cfg=dict(
-            type='ViewReconstrcution',  # TODO: Make this another module
-            tmp_drop_view_only=False,   # Just a temporary thing. Enabling it doesn't 
-                                        # make use of view recon but just simulates
-                                        # view drop. Ideally done at data loading level
-            enabled=True,
-            pretraining=False,
-            use_reconstructed_view=True,
-            num_layers=3,
-            embed_dims=256,
-            layer_cfg=dict(),
-            checkpoint='/workspace/projects/BEVFusion/checkpoints/view_recon/num_layers=3.pth',
-        ),
+        type='ViewReconstrcution',  # TODO: Make this another module
+        num_views_drop=1,
+        enabled=True,
+        pretraining=False,
+        use_reconstructed_view=True,
+        num_layers=3,
+        embed_dims=256,
+        layer_cfg=dict(),
+        checkpoint='/workspace/projects/BEVFusion/checkpoints/view_recon/num_layers=3.pth',
+    ),
     view_transform=dict(
         type='DepthLSSTransform',
         in_channels=256,
@@ -66,6 +64,9 @@ model = dict(
         zbound=[-10.0, 10.0, 20.0],
         dbound=[1.0, 60.0, 0.5],
         downsample=2),
+    tmp_cfg=dict(  # Just for analysis
+        drop_pts_feature=False,
+    ),
     fusion_layer=dict(
         type='ConvFuser', in_channels=[80, 256], out_channels=256))
 
