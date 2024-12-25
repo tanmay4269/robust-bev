@@ -23,7 +23,7 @@ docker run -it \
     --shm-size=64g \
     --ulimit memlock=-1 \
     --ulimit stack=67108864 \
-    -v "${HOST_DATA_DIR}:${CONTAINER_DATA_DIR}:ro" \
+    -v "${HOST_DATA_DIR}:${CONTAINER_DATA_DIR}" \
     -v "${HOST_WORK_DIR}:${CONTAINER_WORK_DIR}" \
     -w "${CONTAINER_WORK_DIR}" \
     --network host \
