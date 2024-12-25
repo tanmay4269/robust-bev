@@ -8,12 +8,12 @@ CKPT_PATH=projects/BEVFusion/checkpoints/bevfusion-2.pth
 
 cd $WORKSPACE_PATH
 export PYTHONPATH=$PYTHONPATH:$WORKSPACE_PATH
-for val in 0.25 0.5 0.75; do
+for val in 0.80 0.95 0.90 0.99; do
     python tools/test.py \
         $CONFIG_PATH \
         $CKPT_PATH \
         --cfg-options \
-            model.pts_dropout_probs.val=$val \
+            model.pts_dropout.probs.val=$val \
             test_dataloader.batch_size=$BATCH_SIZE
     echo ============================
 done

@@ -4,10 +4,14 @@ _base_ = [
 
 model = dict(
     pts_dropout=dict(
-        type="2d",  # 1d or 2d
+        type="1d",  # 1d or 2d
         probs=dict(
-            train=0.3,
-            val=0.3
+            train=1.0,
+            val=1.0
         )
     )
 )
+
+train_cfg = dict(by_epoch=True, max_epochs=1, val_interval=1)
+val_cfg = dict()
+test_cfg = dict()

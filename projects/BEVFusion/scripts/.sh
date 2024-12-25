@@ -3,10 +3,10 @@
 MODE=training
 
 WORKSPACE_PATH=/workspace
-CONFIG_PATH=/workspace/projects/BEVFusion/configs/bevfusion_lidar-cam_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d.py
+CONFIG_PATH=/workspace/projects/BEVFusion/configs/dropping_lidar.py
 # CKPT_PATH=projects/BEVFusion/checkpoints/bevfusion-1.pth
 CKPT_PATH=projects/BEVFusion/checkpoints/bevfusion-2.pth
-TRAINING_BATCH_SIZE=8
+TRAINING_BATCH_SIZE=6
 TESTING_BATCH_SIZE=6
 
 cd $WORKSPACE_PATH
