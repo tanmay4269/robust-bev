@@ -30,6 +30,7 @@ class BEVFusion(Base3DDetector):
         view_transform: Optional[dict] = None,
         img_neck: Optional[dict] = None,
         pts_neck: Optional[dict] = None,
+        pts_dropout: Optional[dict] = None,
         bbox_head: Optional[dict] = None,
         init_cfg: OptMultiConfig = None,
         seg_head: Optional[dict] = None,
@@ -51,6 +52,9 @@ class BEVFusion(Base3DDetector):
         self.view_transform = MODELS.build(
             view_transform) if view_transform is not None else None
         self.pts_middle_encoder = MODELS.build(pts_middle_encoder)
+
+        self.pts_dropout = pts_dropout
+        self.pts_dropout.type = F.dropout if self.pts_dropout.type == '2d' else F.dropout
 
         self.fusion_layer = MODELS.build(
             fusion_layer) if fusion_layer is not None else None
@@ -172,6 +176,8 @@ class BEVFusion(Base3DDetector):
             feats, coords, sizes = self.voxelize(points)
             batch_size = coords[-1, 0] + 1
         x = self.pts_middle_encoder(feats, coords, batch_size)
+        x = self.pts_dropout.type(
+            x, p=self.pts_dropout.probs['train' if self.training else 'val'])
         return x
 
     @torch.no_grad()
