@@ -78,7 +78,16 @@ class BEVFusion(Base3DDetector):
                 self.num_views, embed_dims)
             self.learned_query = nn.Parameter(
                 torch.randn(1, embed_dims))
-            
+
+            C, H, W = 256, 32, 88  # TODO: Find a better way of getting these values
+            self.dropped_view_detector = nn.Sequential(
+                nn.Conv2d(in_channels= C, out_channels= 16, kernel_size=3, padding=1),
+                nn.ReLU(),
+                nn.Flatten(start_dim=1),
+                nn.Linear(16 * H * W, 1),
+                nn.Sigmoid()
+            )
+         
             # TODO: Add this to config
             self.view_recon_net = DetrTransformerDecoder(
                 num_layers=view_recon_cfg.pop('num_layers'),
@@ -199,6 +208,8 @@ class BEVFusion(Base3DDetector):
         img_metas,
         compute_loss=False
     ) -> torch.Tensor:
+        losses = dict()
+
         B, N, C, H, W = x.size()
         x = x.view(B * N, C, H, W).contiguous()
 
@@ -212,16 +223,27 @@ class BEVFusion(Base3DDetector):
         x = x.view(B, int(BN / B), C, H, W)
 
         if self.num_views_drop > 0:
-            dropped_idxs = torch.randint(0, x.shape[1], (self.num_views_drop,), device=x.device)
+            # ! Check if this works
+            dropped_idxs = torch.randint(0, x.shape[1], (B, self.num_views_drop), device=x.device)
             mask = torch.ones_like(x)
-            mask[:, dropped_idxs, ...] = 0
+            for i in range(B):
+                mask[i, dropped_idxs[i], ...] = 0
             x = x * mask
+
+        if self.dropped_view_detector is not None:
+            gt_dropped_idxs = dropped_idxs.clone()  # (B, self.num_views_drop)
+            views = x.clone().view(-1, C, H, W)
+
+            dropped_probs = self.dropped_view_detector(views)  # (B * self.num_views, )
+            bce_loss = F.binary_cross_entropy(dropped_probs, gt_dropped_idxs.view(-1))
+            losses['loss/dropped_view_detector'] = bce_loss
 
         if self.view_recon_enabled:
             x, recon_loss = self.view_reconstruction(
                 x, compute_loss, dropped_idxs)
+            losses['loss/view_recon'] = recon_loss
             if self.view_recon_pretraining:
-                return None, recon_loss
+                return None, losses
 
         # with torch.autocast(device_type='cuda', dtype=torch.float32):
         with torch.cuda.amp.autocast(enabled=False):
@@ -235,7 +257,7 @@ class BEVFusion(Base3DDetector):
                 lidar_aug_matrix,
                 img_metas,
             )
-        return (x, recon_loss) if self.view_recon_enabled else (x, None)
+        return (x, losses) if self.view_recon_enabled else (x, None)
     
     # TODO: Add this to utils.py
     def _build_2d_sin_emb(self, H, W, C, device):
@@ -404,6 +426,7 @@ class BEVFusion(Base3DDetector):
         imgs = batch_inputs_dict.get('imgs', None)
         points = batch_inputs_dict.get('points', None)
         features = []
+        losses = dict()
         if imgs is not None:
             imgs = imgs.contiguous()
             lidar2image, camera_intrinsics, camera2lidar = [], [], []
@@ -421,7 +444,7 @@ class BEVFusion(Base3DDetector):
             camera2lidar = imgs.new_tensor(np.asarray(camera2lidar))
             img_aug_matrix = imgs.new_tensor(np.asarray(img_aug_matrix))
             lidar_aug_matrix = imgs.new_tensor(np.asarray(lidar_aug_matrix))
-            img_feature, recon_loss = self.extract_img_feat(
+            img_feature, img_losses = self.extract_img_feat(
                 imgs,
                 deepcopy(points),
                 lidar2image,
@@ -433,9 +456,10 @@ class BEVFusion(Base3DDetector):
                 compute_loss=True
             )
             features.append(img_feature)
+            losses.update(img_losses)
         
         if self.view_recon_pretraining:
-            return None, recon_loss
+            return None, losses
         
         pts_feature = self.extract_pts_feat(batch_inputs_dict)
         if self.drop_pts_feature:
@@ -452,19 +476,16 @@ class BEVFusion(Base3DDetector):
         x = self.pts_backbone(x)
         x = self.pts_neck(x)
 
-        return (x, recon_loss)
+        return (x, losses)
 
     def loss(self, batch_inputs_dict: Dict[str, Optional[Tensor]],
              batch_data_samples: List[Det3DDataSample],
              **kwargs) -> List[Det3DDataSample]:
         batch_input_metas = [item.metainfo for item in batch_data_samples]
-        feats, recon_loss = self.extract_feat(batch_inputs_dict, batch_input_metas)
+        feats, losses = self.extract_feat(batch_inputs_dict, batch_input_metas)
 
-        losses = dict()
         if not self.view_recon_pretraining and self.with_bbox_head:
             bbox_loss = self.bbox_head.loss(feats, batch_data_samples)
             losses.update(bbox_loss)
-        if recon_loss is not None:
-            losses['loss/view_recon'] = recon_loss
 
         return losses
